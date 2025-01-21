@@ -1,0 +1,6 @@
+/data/*
+/options_data/*
+*.pyc
+*.pyo
+*.pkl
+*.pth
