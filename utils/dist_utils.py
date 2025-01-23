@@ -3,13 +3,12 @@ from scipy.interpolate import PchipInterpolator
 from scipy.stats import wasserstein_distance
 
 
-def generate_smooth_pdf(quantiles, taus, min_density=1e-3, eps=1e-6, window=61):
+def generate_smooth_pdf(quantiles, taus, min_density=1e-3, eps=1e-6, window=61, grid_points=1000):
     """
     Generate a smoothed PDF from quantiles with additional controls to prevent spikes
     and ensure the CDF is between [0, 1].
     """
     # Constants
-    GRID_POINTS = 1000
     og_quants = quantiles.copy()
     og_taus = taus.copy()
 
@@ -18,7 +17,7 @@ def generate_smooth_pdf(quantiles, taus, min_density=1e-3, eps=1e-6, window=61):
     taus = taus[unique_mask]
 
     # Create denser grid
-    grid_x = np.linspace(quantiles[0], quantiles[-1], GRID_POINTS)
+    grid_x = np.linspace(quantiles[0], quantiles[-1], grid_points)
 
     # Monotonic spline for the CDF
     try:
