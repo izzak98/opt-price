@@ -290,6 +290,7 @@ class TestDataset(Dataset):
 
         self.test = test
         self.df = None
+        self.date_index_map = {}  # Add this to store date to index mapping
 
         self.gen_data()
 
@@ -320,6 +321,7 @@ class TestDataset(Dataset):
         self.y = []
         self.cat = []
         self.denorm = []
+        self.date_index_map = {}  # Reset the date mapping
 
         grouping = get_grouping(self.datas, self.main_asset)
         if grouping is None:
@@ -351,7 +353,7 @@ class TestDataset(Dataset):
         end_date = min(
             normalized_df.index[-1],
             min(normalized_df.index, key=lambda x: abs(x - self.end_date))
-        )  # pylint: disable=W3301
+        )
 
         normalized_df = normalized_df.loc[start_date:end_date]
 
@@ -360,6 +362,9 @@ class TestDataset(Dataset):
             s = cross_vol.loc[x.index]
             z = x.index
             y = returns.loc[x.index]
+
+            # Store the date to index mapping
+            self.date_index_map[z[0]] = i
 
             cat = [0] * len(self.datas.keys())
             cat[list(self.datas.keys()).index(grouping)] = 1
@@ -370,6 +375,45 @@ class TestDataset(Dataset):
             self.s.append(s)
             self.z.append(z)
             self.y.append(y)
+
+    def query_by_date(self, date: str | pd.Timestamp) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor] | None:
+        """
+        Query the dataset for a specific date.
+
+        Args:
+            date (str | pd.Timestamp): The date to query for. If string, format should be 'YYYY-MM-DD'.
+
+        Returns:
+            tuple[Tensor, Tensor, Tensor, Tensor, Tensor] | None: Returns the (x, s, z, y, sy) tuple for the 
+            specified date if found, None otherwise. If test=True, returns (x, s, z, y, observed_returns).
+
+        Raises:
+            ValueError: If the date format is invalid.
+        """
+        try:
+            if isinstance(date, str):
+                query_date = pd.to_datetime(date, format="%Y-%m-%d", utc=True)
+            else:
+                query_date = pd.to_datetime(date, utc=True)
+        except ValueError as e:
+            raise ValueError("Invalid date format. Use 'YYYY-MM-DD'.") from e
+
+        # Find the closest date in our dataset
+        if query_date in self.date_index_map:
+            idx = self.date_index_map[query_date]
+            return self.__getitem__(idx)
+
+        # If exact date not found, find the nearest available date
+        available_dates = list(self.date_index_map.keys())
+        if not available_dates:
+            return None
+
+        nearest_date = min(available_dates, key=lambda x: abs(x - query_date))
+        if abs(nearest_date - query_date) <= pd.Timedelta(days=5):  # Within 5 days threshold
+            idx = self.date_index_map[nearest_date]
+            return self.__getitem__(idx)
+
+        return None
 
     def __len__(self) -> int:
         return len(self.x)
