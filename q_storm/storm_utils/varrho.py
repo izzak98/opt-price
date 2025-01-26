@@ -1,5 +1,8 @@
 import torch
 import numpy as np
+from accelerate import Accelerator
+
+accelerator = Accelerator()
 
 
 def fast_normal_cdf(x, mu=0, sigma=1):
@@ -16,36 +19,61 @@ def gaussian_pdf(x, mu=0, sigma=1):
 
 def torch_interp(x, xp, fp):
     """
-    PyTorch equivalent of np.interp
-    x: points to evaluate at
-    xp: known x values
-    fp: known y values
-    """
-    if isinstance(x, float):
-        x = torch.tensor([x])
-    if isinstance(xp, (list, np.ndarray)):
-        xp = torch.tensor(xp)
-    if isinstance(fp, (list, np.ndarray)):
-        fp = torch.tensor(fp)
+    PyTorch equivalent of np.interp with batched inputs
 
-    # Find indices of values in original array
-    idxs = torch.searchsorted(xp, x)
+    Args:
+        x: Points to evaluate at (batch_size, 1)
+        xp: Known x values (len_values) or (batch_size, len_values)
+        fp: Known y values (batch_size, len_values)
+
+    Returns:
+        Interpolated values of shape (batch_size, 1)
+    """
+    batch_size = x.shape[0]
+
+    # Handle case where xp is shared across batch
+    if len(xp.shape) == 1:
+        xp = xp.unsqueeze(0).expand(batch_size, -1)
+
+    # Convert any remaining non-tensor inputs
+    x = torch.as_tensor(x).to(accelerator.device)
+    xp = torch.as_tensor(xp).to(accelerator.device)
+    fp = torch.as_tensor(fp).to(accelerator.device)
+
+    # Find indices of values in original array for each batch
+    idxs = torch.searchsorted(xp, x)  # (batch_size, 1)
 
     # Clip indices to valid range
-    idxs = torch.clamp(idxs, 1, len(xp)-1)
+    idxs = torch.clamp(idxs, 1, xp.shape[1]-1)
 
     # Calculate weights
-    weights = (x - xp[idxs-1]) / (xp[idxs] - xp[idxs-1])
+    batch_indices = torch.arange(batch_size).unsqueeze(1)  # (batch_size, 1)
+    weights = (x - xp[batch_indices, idxs-1]) / \
+        (xp[batch_indices, idxs] - xp[batch_indices, idxs-1])
 
     # Interpolate
-    return fp[idxs-1] + weights * (fp[idxs] - fp[idxs-1])
+    return fp[batch_indices, idxs-1] + weights * (fp[batch_indices, idxs] - fp[batch_indices, idxs-1])
 
 
-def calc_varrho(taus, varpi_quants, varpi_grid, varpi_pdf, w_t, t):
-    u = fast_normal_cdf(w_t/(t**0.5))
-    rho_quant = torch_interp(u, torch.tensor(taus), varpi_quants)
-    rho_varpi = torch_interp(rho_quant, varpi_grid, varpi_pdf)**(-1)
-    rho_gauss = gaussian_pdf(w_t/(t**0.5))
-    rho_term = 1/(t**0.5)
-    varrho = rho_term * rho_varpi * rho_gauss
+def calc_varrho(taus, varpi_quants, varpi_grid, varpi_pdf, w_t, t, eps=1e-4):
+    # Ensure t is positive to avoid division by zero
+    t_safe = torch.clamp(t, min=eps)
+
+    # Compute Gaussian CDF/PDF
+    z = w_t / torch.sqrt(t_safe)
+    rho_gauss = torch.exp(-0.5 * z**2) / (np.sqrt(2 * np.pi))  # Stable Gaussian PDF
+    u = 0.5 * (1 + torch.erf(z / np.sqrt(2)))  # Stable Gaussian CDF
+
+    # Clamp u to avoid extrapolation errors (ensure within [eps, 1-eps])
+    u_safe = torch.clamp(u, min=eps, max=1 - eps)
+
+    # Interpolate quantile and PDF (extrapolate with nearest values if needed)
+    rho_quant = torch_interp(u_safe, torch.tensor(taus), varpi_quants)
+    rho_varpi = torch_interp(rho_quant, varpi_grid, varpi_pdf)
+
+    # Regularize varpi PDF to avoid division by zero
+    rho_varpi_safe = torch.clamp(rho_varpi, min=eps)
+
+    # Compute varrho (ensure non-negative)
+    varrho = rho_gauss / (torch.sqrt(t_safe) * rho_varpi_safe)
     return varrho
