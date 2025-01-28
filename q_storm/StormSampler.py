@@ -122,8 +122,19 @@ class StormSampler:
         # Generate rate samples efficiently
         n_final = len(varpi_quantiles)
         rf = torch.rand(n_final, 1, device=self.device) * self.rf_range + self.rf_min
-        S_prime = (torch.rand(n_final, 1, device=self.device) * self.s_max)
-        t_prime = (torch.rand(n_final, 1, device=self.device) * self.t_max)
+        rf = rf / 365  # Convert to daily rate
+
+        sigma = 1.0  # You can adjust this to control the shape of the distribution
+        mu = torch.log(self.s_max/2)  # Center the distribution
+        # Generate log-normal samples
+        S_prime = torch.exp(
+            mu + sigma * torch.randn(n_final, 1, device=self.device)
+        )
+
+        # Clip values to ensure they stay within bounds
+        S_prime = torch.clamp(S_prime, min=0.0, max=self.s_max)
+
+        t_prime = varphi_t * T
 
         return {
             "S_prime": S_prime,

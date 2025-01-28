@@ -121,6 +121,7 @@ class QStorm(nn.Module):
     ) -> torch.Tensor:
         # Fast input concatenation
         model_inps = torch.cat([S_prime, t_prime, rf, varpi_q], dim=1)
+        # model_inps = torch.cat([S_prime, t_prime, rf], dim=1)
 
         # Forward through input network
         X = self.input_net(model_inps)
@@ -133,11 +134,11 @@ class QStorm(nn.Module):
             X = dgm_s
 
         # Output projection
-        return self.output_net(X)
+        return F.softplus(self.output_net(X))
 
 
 if __name__ == "__main__":
-    model = QStorm(35, [10, 20], 10, 2, 'relu')
+    model = QStorm(35, [256, 64, 64, 32], 10, 2, 'relu')
     dummy_s_prime = torch.randn(100, 1)
     dummy_k_prime = torch.randn(100, 1)
     dummy_t_prime = torch.rand(100, 1)

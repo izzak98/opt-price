@@ -37,7 +37,7 @@ class StormTrainer():
         # Forward pass: predict normalized option price V' (or U) in normalized space
         V_prime = model(S_prime, t_prime, rf, varpi_q)  # Shape: (batch_size, 1)
 
-        varrho_t = t_prime * 365  # Convert τ to days
+        varrho_t = t_prime  # * 365  # Convert τ to days
         # Compute the additional normalized parameter varrho(tau) based on w_t
         w_t = w_t * varrho_t  # Normalize w_t by time
         varrho = calc_varrho(var_rho_taus, varpi_q, varpi_grid,
@@ -69,17 +69,14 @@ class StormTrainer():
         term1 = V_prime_tau
 
         # Second term: - (1/2) (S')^2 varrho^2 ∂²U/∂(S')²
-        term2 = - 0.5 * (S_prime ** 2) * (varrho ** 2) * V_prime_S2
-
-        # Third term: - (1/2) S' varrho^2 ∂U/∂S'
-        term3 = - 0.5 * S_prime * (varrho ** 2) * V_prime_S
+        term2 = 0.5 * (S_prime ** 2) * (varrho ** 2) * V_prime_S2
 
         # Fourth term: + rf S' ∂U/∂S'
-        term4 = rf * S_prime * V_prime_S
+        term3 = rf * S_prime * V_prime_S
 
         # Fifth term: - rf U
-        term5 = - rf * V_prime
-        residual = term1 + term2 + term3 + term4 + term5
+        term4 = - rf * V_prime
+        residual = term1 + term2 + term3 + term4
         # Residual loss is the mean squared residual of the SPDE
         residual_loss = torch.mean(residual ** 2)
         return residual_loss
@@ -167,7 +164,7 @@ class CallStormTrainer(StormTrainer):
 
     def over_loss(self, model, S_max, t_prime, rf, varpi_q):
         V_prime = model(S_max, t_prime, rf, varpi_q)
-        payout = S_max - torch.exp(-rf * t_prime)
+        payout = S_max - 1.0  # Corrected from exp(-rf * t_prime)
         loss = torch.mean((V_prime - payout)**2)
         return loss
 
