@@ -49,8 +49,11 @@ def train_storm(model,
             loss = losses["total_loss"]
             accelerator.backward(loss)
             return loss
-
-        optimizer.step(closure)
+        try:
+            optimizer.step(closure)
+        except Exception as e:
+            print(e)
+            continue
 
         losses = trainer.forward(model, sampled_data, taus, 1)
         total_loss = losses["total_loss"]
