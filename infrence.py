@@ -196,11 +196,17 @@ def black_scholes_american_call(S, K, T, r, sigma):
     return call_price
 
 
+def get_delta(model, S_prime, V_prime):
+    delta = torch.autograd.grad(V_prime, S_prime, create_graph=True)[0]
+    return delta
+
+
 def infrence_storm(q_storm, daily_data, varpi_outputs):
     device = accelerator.device
     Vs = []
     V_primes = []
     BS_Vs = []
+    deltas = []
     rf = daily_data["rf"].iloc[0].item()
     rf_torch = torch.tensor([[rf]]).float().to(device)
     for idx, row in daily_data.iterrows():
@@ -208,7 +214,7 @@ def infrence_storm(q_storm, daily_data, varpi_outputs):
         t_prime = row["t_prime"]
         idx = row["idx"]
         varpi_q = varpi_outputs[idx].unsqueeze(0)
-        S_prime = torch.tensor([[S_prime]]).float().to(device)
+        S_prime = torch.tensor([[S_prime]]).float().to(device).requires_grad_(True)
         t_prime = torch.tensor([[t_prime]]).float().to(device)
         V_prime = q_storm(S_prime, t_prime, rf_torch, varpi_q)
         K = row["K"]
@@ -218,26 +224,32 @@ def infrence_storm(q_storm, daily_data, varpi_outputs):
                                            r=rf*365,
                                            sigma=row["volatility"]*np.sqrt(365)
                                            )
+        delta_prime = get_delta(q_storm, S_prime, V_prime)
         V = V_prime * K
         Vs.append(V.item())
         V_primes.append(V_prime.item())
         BS_Vs.append(BS_V)
+        deltas.append(delta_prime.item())
     daily_data["V"] = Vs
     daily_data["V_prime"] = V_primes
+    daily_data["V_prime_delta"] = deltas
+    daily_data["V_delta"] = daily_data["V_prime_delta"] * daily_data["K"]
     daily_data["BS_V"] = np.round(BS_Vs, 6)
     daily_data["BS_V_prime"] = daily_data["BS_V"]/daily_data["K"]
     return daily_data
 
 
 if __name__ == "__main__":
-    q_storm = torch.load('models/q_storm.pth')
+    q_storm = torch.load('models/2q_storm.pth')
     varphi = torch.load('models/varphi.pth')
     varpi = torch.load('models/varpi.pth')
 
+    ticker = ["MCD", "NKE", "PFE"]
+
     test_datas = load_varphi_inputs()
-    call_opts = get_call_options(["GME", "BB", "JPM"])
+    call_opts = get_call_options(ticker)
     daily_rf = get_rf()
-    prices, volatilities = get_prices(["GME", "BB", "JPM"])
+    prices, volatilities = get_prices(ticker)
     storm_data = pd.DataFrame()
     dates = call_opts["date"].unique()
     for date in tqdm(dates, desc="inferencing days"):
@@ -252,5 +264,5 @@ if __name__ == "__main__":
         daily_data = match_quantiles_with_options(daily_data, unique_combs)
         daily_data = infrence_storm(q_storm, daily_data, varpi_q)
         storm_data = pd.concat((storm_data, daily_data), axis=0)
-    storm_data.to_csv("storm_data.csv")
+    storm_data.to_csv("sstorm_data.csv")
     print(daily_data)
