@@ -1,208 +1,142 @@
 import pandas as pd
 import numpy as np
-from tqdm import tqdm
-import optuna
+from typing import Optional
 
 
-class Position:
-    def __init__(self, entry_date, ticker, K, entry_price, t_prime, stop_loss, take_profit, model_price):
-        self.entry_date = entry_date
-        self.ticker = ticker
-        self.K = K
-        self.entry_price = entry_price  # Price paid (normalized)
-        self.current_price = entry_price
-        self.days_to_expiry = t_prime
-        self.stop_loss = stop_loss  # As decimal (e.g., 0.05 for 5%)
-        self.take_profit = take_profit  # As decimal
-        self.model_entry_price = model_price
-        self.model_exit_price = model_price
-        self.status = 'open'
-
-
-class TradingSimulator:
-    def __init__(self, data, params):
-        self.data = data.sort_values('date')
-        self.params = params
-        self.current_date = None
+class OptionsBacktest:
+    def __init__(self, data: pd.DataFrame, initial_capital: float = 100000):
+        self.data = data.copy()
+        self.initial_capital = initial_capital
+        self.current_capital = initial_capital
         self.positions = []
-        self.closed_positions = []
+        self.trades = []
 
-        # Parameters
-        self.commission = params.get('commission', 0.001)  # 0.1%
-        self.slippage = params.get('slippage', 0.0005)  # 0.05%
-        self.stop_loss = params.get('stop_loss', 0.10)
-        self.take_profit = params.get('take_profit', 0.20)
-        self.signal_distance = params.get('signal_distance', 0.001)
-        self.close_signal_distance = params.get('close_signal_distance', 0.0005)
-        self.capital_per_trade = params.get('capital_per_trade', 1000)
-        self.selected_asset = params.get('asset', 'JPM')
-        self.n_days = params.get('n_days', 30)
-        self.max_positions = params.get('max_positions', 10)
+    def calculate_mispricing(self) -> pd.DataFrame:
+        """Calculate mispricing based on model V vs market price"""
+        self.data['mispricing'] = (self.data['V'] * self.data['K']) - self.data['opt_price']
+        self.data['mispricing_pct'] = self.data['mispricing'] / self.data['opt_price']
+        return self.data
 
-    def run(self):
-        unique_dates = self.data['date'].unique()
+    def generate_signals(self,
+                         mispricing_threshold: float = 0.15,
+                         min_volume: int = 10,
+                         max_position_size: float = 0.1) -> pd.DataFrame:
+        """Generate trading signals based on mispricing"""
+        # Only consider options with sufficient volume
+        self.data['signal'] = 0
+        mask = (self.data['volume'] >= min_volume)
 
-        for i, date in enumerate(sorted(unique_dates)):
-            self.current_date = date
-            self.process_existing_positions(date)
-            if len(self.positions) < self.max_positions:
-                self.check_new_signals(date)
-            if i == self.n_days:
-                break
+        # Buy signal when model price is significantly higher than market price
+        self.data.loc[mask & (self.data['mispricing_pct'] > mispricing_threshold), 'signal'] = 1
 
-    def process_existing_positions(self, current_date):
-        for pos in list(self.positions):  # Iterate over copy for safe removal
-            # Get current day's data for this option
-            # Update days to expiry
-            pos.days_to_expiry -= 1
-            current_data = self.data[(self.data['date'] == current_date) &
-                                     (self.data['ticker'] == pos.ticker) &
-                                     (self.data['K'] == pos.K) &
-                                     (self.data['t_prime'] == pos.days_to_expiry)]
+        # Calculate position sizes based on confidence (mispricing magnitude)
+        self.data['position_size'] = np.minimum(
+            self.data['mispricing_pct'] * max_position_size,
+            max_position_size
+        )
 
-            # Check expiration
-            if pos.days_to_expiry <= 0:
-                self.close_position(pos, current_date, reason='expired')
-                continue
+        return self.data
 
-            # Update current price if data available
-            if not current_data.empty:
-                opt_price = current_data['opt_price'].item()
-                pos.current_price = opt_price  # Update to current normalized price
+    def execute_trades(self, transaction_cost: float = 0.01):
+        """Simulate execution of trades based on signals"""
+        for _, row in self.data.iterrows():
+            if row['signal'] == 1:
+                # Calculate position size in dollars
+                position_dollars = self.current_capital * row['position_size']
+                # Each contract is for 100 shares
+                num_contracts = int(position_dollars / (row['opt_price'] * 100))
 
-                # Check stop loss/take profit
-                pct_change = (pos.current_price - pos.entry_price)/pos.entry_price
+                if num_contracts > 0:
+                    # Account for transaction costs
+                    cost = (num_contracts * row['opt_price'] * 100) * (1 + transaction_cost)
 
-                if pct_change <= -self.stop_loss:
-                    self.close_position(pos, current_date, reason='stop_loss')
-                elif pct_change >= self.take_profit:
-                    self.close_position(pos, current_date, reason='take_profit')
-                else:
-                    # Check signal reversal exit
-                    V_prime = current_data['V_prime'].item()
-                    signal_ratio = V_prime
-                    market_ratio = current_data['opt_price_prime'].item()
-                    signal = (signal_ratio - market_ratio) / market_ratio
+                    if cost <= self.current_capital:
+                        trade = {
+                            'date': row['date'],
+                            'ticker': row['ticker'],
+                            'strike': row['K'],
+                            'contracts': num_contracts,
+                            'entry_price': row['opt_price'],
+                            'cost': cost,
+                            'expected_return': row['opt_returns'],
+                            'mispricing': row['mispricing'],
+                            'mispricing_pct': row['mispricing_pct']
+                        }
 
-                    if signal < self.close_signal_distance and current_data['volume'].item() > 0:
-                        self.close_position(pos, current_date, reason='signal_reversal')
+                        self.trades.append(trade)
+                        self.current_capital -= cost
 
-    def close_position(self, position, exit_date, reason):
-        # Get exit price data
-        exit_data = self.data[(self.data['date'] == exit_date) &
-                              (self.data['ticker'] == position.ticker) &
-                              (self.data['K'] == position.K) &
-                              (self.data['t_prime'] == position.days_to_expiry)]
+    def calculate_performance(self) -> dict:
+        """Calculate strategy performance metrics"""
+        if not self.trades:
+            return {'error': 'No trades executed'}
 
-        if exit_data.empty:  # Handle missing data at expiry
-            exit_price = 0  # Assume worthless if no data
-            model_exit_price = 0
-        else:
-            # Calculate exit price with slippage
-            exit_price = exit_data['best_bid'].item()
-            model_exit_price = exit_data['V'].item()
+        trades_df = pd.DataFrame(self.trades)
 
         # Calculate returns
-        pnl = (exit_price - position.entry_price) * self.capital_per_trade
-        pnl -= self.commission * self.capital_per_trade * 2  # Entry and exit commissions
+        total_investment = sum(trade['cost'] for trade in self.trades)
+        total_return = sum(trade['cost'] * trade['expected_return'] for trade in self.trades)
 
-        # Record closed position
-        self.closed_positions.append({
-            'entry_date': position.entry_date,
-            'exit_date': exit_date,
-            'ticker': position.ticker,
-            'pnl': pnl,
-            'reason': reason,
-            'days_held': (exit_date - position.entry_date).days,
-            'entry_price': position.entry_price,
-            'exit_price': exit_price,
-            'stop_loss': position.stop_loss,
-            'take_profit': position.take_profit,
-            'K': position.K,
-            'model_entry_price': position.model_entry_price,
-            'model_exit_price': model_exit_price
-        })
+        # Performance metrics
+        performance = {
+            'total_trades': len(self.trades),
+            'total_investment': total_investment,
+            'final_capital': self.current_capital + total_return,
+            'total_return': total_return,
+            'return_pct': (total_return / total_investment) * 100 if total_investment > 0 else 0,
+            'avg_mispricing': trades_df['mispricing'].mean(),
+            'avg_mispricing_pct': trades_df['mispricing_pct'].mean(),
+            'trades_by_ticker': trades_df['ticker'].value_counts().to_dict()
+        }
 
-        self.positions.remove(position)
-
-    def check_new_signals(self, current_date):
-        day_data = self.data[(self.data['date'] == current_date) &
-                             (self.data['ticker'] == self.selected_asset)]
-        day_data = day_data.sort_values('V_prime', ascending=False)
-        for _, row in day_data.iterrows():
-            if len(self.positions) >= self.max_positions:
-                break
-            signal_ratio = row['V_prime']
-            market_ratio = row['opt_price_prime']
-            signal = (signal_ratio - market_ratio)/market_ratio
-
-            # Entry condition
-            if signal > self.signal_distance:
-                # Calculate entry price with slippage
-                entry_price = row['best_offer'] * (1 + self.slippage)
-
-                new_pos = Position(
-                    entry_date=current_date,
-                    ticker=row['ticker'],
-                    K=row['K'],
-                    entry_price=entry_price,
-                    t_prime=row['t_prime'],
-                    stop_loss=self.stop_loss,
-                    take_profit=self.take_profit,
-                    model_price=row['V']
-                )
-
-                self.positions.append(new_pos)
-
-    def get_performance_report(self):
-        df = pd.DataFrame(self.closed_positions)
-        df['cumulative_pnl'] = df['pnl'].cumsum()
-        return df
+        return performance
 
 
-# Example Usage
+def run_backtest(data: pd.DataFrame,
+                 initial_capital: float = 100000,
+                 mispricing_threshold: float = 0.15,
+                 min_volume: int = 10,
+                 max_position_size: float = 0.1,
+                 transaction_cost: float = 0.01) -> dict:
+    """
+    Run complete backtest with given parameters
+
+    Args:
+        data: DataFrame containing options data
+        initial_capital: Starting capital for the strategy
+        mispricing_threshold: Minimum mispricing percentage to trigger a trade
+        min_volume: Minimum volume required for a trade
+        max_position_size: Maximum position size as percentage of capital
+        transaction_cost: Transaction cost as percentage of trade value
+
+    Returns:
+        Dictionary containing backtest results and performance metrics
+    """
+    backtest = OptionsBacktest(data, initial_capital)
+
+    # Execute strategy steps
+    backtest.calculate_mispricing()
+    backtest.generate_signals(mispricing_threshold, min_volume, max_position_size)
+    backtest.execute_trades(transaction_cost)
+
+    # Calculate and return performance
+    return backtest.calculate_performance()
+
+
+# Example usage:
 if __name__ == "__main__":
-    # Load your data
-    data = pd.read_csv('storm_data.csv', parse_dates=['date'])
-
-    # def objective(trial):
-    #     params = {
-    #         'commission': 0.001,  # 0.1% per trade
-    #         'slippage': 0.0005,
-    #         'stop_loss': trial.suggest_float('stop_loss', 0.01, 0.15, step=0.01),
-    #         'take_profit': trial.suggest_float('take_profit', 0.01, 0.25, step=0.01),
-    #         'signal_distance': trial.suggest_float('signal_distance', 0.001, 0.1, step=0.001),
-    #         'close_signal_distance': trial.suggest_float('close_signal_distance', 0.001, 0.1, step=0.001),
-    #         'max_positions': trial.suggest_int('max_positions', 5, 50),
-    #         'capital_per_trade': 100,
-    #         'n_days': 30,
-    #         'asset': 'GME'
-    #     }
-
-    #     simulator = TradingSimulator(data, params)
-    #     simulator.run()
-    #     try:
-    #         results = simulator.get_performance_report()
-    #     except Exception as e:
-    #         return float("-inf")
-    #     return results['pnl'].sum()
-
-    # study = optuna.create_study(direction='maximize')
-    # study.optimize(objective, n_trials=100, n_jobs=1)
-    # print(study.best_params)
+    # Sample parameters
     params = {
-        'commission': 0.01,  # 0.1% per trade
-        'slippage': 0.001,
-        'stop_loss': 0.1,  # 2% stop loss
-        'take_profit': 0.04,  # 4% take profit
-        'signal_distance': 1,  # 2% distance between signals
-        'close_signal_distance': 0.01,  # 1% distance between close signals
-        'max_positions': 5,
-        'capital_per_trade': 100,
-        'n_days': 60,
-        'asset': 'JPM'
+        'initial_capital': 100000,
+        'mispricing_threshold': 0.01,
+        'min_volume': 10,
+        'max_position_size': 0.1,
+        'transaction_cost': 0.01
     }
+    data = pd.read_csv('storm_data.csv')
 
-    simulator = TradingSimulator(data, params)
-    simulator.run()
-    print(simulator.get_performance_report())
+    # Run backtest with sample parameters
+    results = run_backtest(data, **params)
+    print("\nBacktest Results:")
+    for metric, value in results.items():
+        print(f"{metric}: {value}")
