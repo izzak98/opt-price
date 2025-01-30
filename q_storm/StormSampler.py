@@ -143,6 +143,7 @@ class StormSampler:
             "varpi_q": varpi_quantiles,
             "varpi_pdfs": varpi_pdfs,
             "varpi_grids": varpi_grids,
+            'varphi_q': sampled_quantiles
         }
 
     def sample(self, n_points: int) -> Dict[str, Tensor]:
