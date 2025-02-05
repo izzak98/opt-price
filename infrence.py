@@ -244,7 +244,7 @@ if __name__ == "__main__":
     varphi = torch.load('models/varphi.pth')
     varpi = torch.load('models/varpi.pth')
 
-    ticker = ["MCD", "NKE", "PFE"]
+    ticker = ["XOM", "NOK"]
 
     test_datas = load_varphi_inputs()
     call_opts = get_call_options(ticker)
@@ -264,5 +264,5 @@ if __name__ == "__main__":
         daily_data = match_quantiles_with_options(daily_data, unique_combs)
         daily_data = infrence_storm(q_storm, daily_data, varpi_q)
         storm_data = pd.concat((storm_data, daily_data), axis=0)
-    storm_data.to_csv("sstorm_data.csv")
+    storm_data.to_csv("ssstorm_data.csv")
     print(daily_data)

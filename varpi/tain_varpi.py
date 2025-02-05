@@ -112,9 +112,9 @@ def main(varpi_dataset, batch_size=1024):
     scheduler = torch.optim.lr_scheduler.StepLR(optim, 10, 0.5)
 
     dataset_size = len(varpi_dataset)
-    train_size = int(0.7 * dataset_size)  # 80% for training
-    val_size = int(0.2 * dataset_size)    # 10% for validation
-    test_size = dataset_size - train_size - val_size  # Remaining 10% for testing
+    train_size = int(0.7 * dataset_size)
+    val_size = int(0.2 * dataset_size)
+    test_size = dataset_size - train_size - val_size
 
     train_dataset, val_dataset, _ = random_split(
         varpi_dataset, [train_size, val_size, test_size])
