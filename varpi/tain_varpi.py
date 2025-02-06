@@ -104,9 +104,7 @@ def validate_varpi(model, criterion, val_data_loader, verbose):
 def main(varpi_dataset, batch_size=1024):
     hidden_dims = [4096, 4096, 4096, 2048, 2048, 1024, 256, 256, 64, 32]
     model = VarPi(hidden_dims)
-    if os.path.exists("models/varpi.pth"):
-        model = torch.load("models/varpi.pth")
-        return model
+
     optim = torch.optim.Adam(model.parameters(), lr=5e-4)
     criterion = mae_loss
     scheduler = torch.optim.lr_scheduler.StepLR(optim, 10, 0.5)
@@ -116,28 +114,35 @@ def main(varpi_dataset, batch_size=1024):
     val_size = int(0.2 * dataset_size)
     test_size = dataset_size - train_size - val_size
 
-    train_dataset, val_dataset, _ = random_split(
+    train_dataset, val_dataset, test_data_set = random_split(
         varpi_dataset, [train_size, val_size, test_size])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_data_set, batch_size=batch_size, shuffle=False)
 
-    model, optim, train_loader, val_loader, scheduler = accelerator.prepare(
-        model, optim, train_loader, val_loader, scheduler)
+    model, optim, train_loader, val_loader, scheduler, test_loader = accelerator.prepare(
+        model, optim, train_loader, val_loader, scheduler, test_loader)
     model.compile()
 
-    best_loss, model = train_varpi(
-        model=model,
-        optimzer=optim,
-        scheduler=scheduler,
-        criterion=criterion,
-        train_data_loader=train_loader,
-        val_data_loader=val_loader,
-        epochs=100,
-        patience=10,
-        verbose=True
-    )
-    torch.save(model, "models/varpi.pth")
+    if os.path.exists("models/varpi.pth"):
+        model = torch.load("models/varpi.pth")
+    else:
+        best_loss, model = train_varpi(
+            model=model,
+            optimzer=optim,
+            scheduler=scheduler,
+            criterion=criterion,
+            train_data_loader=train_loader,
+            val_data_loader=val_loader,
+            epochs=100,
+            patience=10,
+            verbose=True
+        )
+        torch.save(model, "models/varpi.pth")
+
+    test_loss = validate_varpi(model, criterion, test_loader, verbose=True)
+    print(f"Test Loss: {test_loss:.4f}, Len of Test Dataset: {len(test_data_set)}")
     return model
 
 
@@ -145,8 +150,3 @@ if __name__ == "__main__":
     from varpi.gen_walks import get_walk_dataset, WalkDataSet
     varpi_dataset = get_walk_dataset()
     model = main(varpi_dataset)
-    print(model)
-    q = varpi_dataset[-1][0].view(1, -1).to("cuda")
-    t = varpi_dataset[-1][1].view(1, -1).to("cuda")
-    T = varpi_dataset[-1][2].view(1, -1).to("cuda")
-    print(model(q, t, T))
