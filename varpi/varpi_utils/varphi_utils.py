@@ -94,8 +94,23 @@ def get_all_quantiles(data_set, model):
                 with torch.no_grad():
                     _, estimated_quantiles = model(x, s, z)
                 sub_values["all_pred_quantiles"].append(estimated_quantiles.detach().cpu().numpy())
-                sub_values["observed_returns"].append(obs.cpu().numpy().squeeze())
-                sub_values["future_returns"].append(y.cpu().numpy().squeeze())
+                # Convert to numpy and ensure consistent 1D shape for concatenation
+                # obs and y have shape (batch_size, 1) from the dataset
+                # We need to ensure all arrays are 1D before concatenation
+                obs_np = obs.cpu().numpy()
+                y_np = y.cpu().numpy()
+                # Reshape to ensure 1D: (batch_size, 1) -> (batch_size,)
+                # Handle edge cases where batch_size might be 1
+                if obs_np.ndim > 1:
+                    obs_np = obs_np.reshape(-1)
+                elif obs_np.ndim == 0:
+                    obs_np = obs_np.reshape(1)
+                if y_np.ndim > 1:
+                    y_np = y_np.reshape(-1)
+                elif y_np.ndim == 0:
+                    y_np = y_np.reshape(1)
+                sub_values["observed_returns"].append(obs_np)
+                sub_values["future_returns"].append(y_np)
         if len(sub_values["observed_returns"]) == 0:
             continue
         sub_values["observed_returns"] = np.concatenate(sub_values["observed_returns"], axis=0)
