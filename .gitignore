@@ -4,3 +4,6 @@
 *.pyo
 *.pkl
 *.csv
+runs/
+*.pth
+/samples_cache/
