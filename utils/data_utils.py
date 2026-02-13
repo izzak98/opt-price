@@ -204,7 +204,9 @@ class DistDataset(Dataset):
 
     def __getitem__(self, idx) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         x = torch.tensor(self.x[idx].values, dtype=torch.float32).to(DEVICE)
-        s = torch.tensor(self.s[idx], dtype=torch.float32).to(
+        # Convert Series to numpy array to avoid FutureWarning about integer indexing
+        s_values = self.s[idx].values if hasattr(self.s[idx], 'values') else self.s[idx]
+        s = torch.tensor(s_values, dtype=torch.float32).to(
             DEVICE).view(-1, 1)
         sub_z = self.market_data.loc[self.z[idx]]
         z = torch.tensor(sub_z.values, dtype=torch.float32).to(DEVICE)
@@ -420,7 +422,9 @@ class TestDataset(Dataset):
 
     def __getitem__(self, idx) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         x = torch.tensor(self.x[idx].values, dtype=torch.float32).to(DEVICE)
-        s = torch.tensor(self.s[idx], dtype=torch.float32).to(
+        # Convert Series to numpy array to avoid FutureWarning about integer indexing
+        s_values = self.s[idx].values if hasattr(self.s[idx], 'values') else self.s[idx]
+        s = torch.tensor(s_values, dtype=torch.float32).to(
             DEVICE).view(-1, 1)
         sub_z = self.market_data.loc[self.z[idx]]
         z = torch.tensor(sub_z.values, dtype=torch.float32).to(DEVICE)
